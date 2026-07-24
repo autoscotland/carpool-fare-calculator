@@ -1,0 +1,12 @@
+{
+  "name": "共乘帳本",
+  "short_name": "共乘帳本",
+  "description": "共乘車資分攤計算器",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f0",
+  "theme_color": "#0c6048",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
