@@ -2,6 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { findEtcRoute, type EtcNetwork, type EtcRoute } from "../lib/etc";
+import {
+  isValidFuelPriceData,
+  nextMileageRate,
+  type FuelPriceData,
+  type FuelRateState,
+} from "../lib/fuel";
 
 type Mode = "owner" | "everyone" | "fuel";
 type RoundTo = 0 | 10 | 50 | 100;
@@ -13,6 +19,9 @@ type Trip = {
   distance: number | "";
   mode: Mode;
   rate: number;
+  autoFuelRate: boolean;
+  fuelReferencePrice: number;
+  fuelEffectiveDate: string;
   efficiency: number;
   fuelPrice: number;
   etcEstimate: number;
@@ -32,7 +41,10 @@ const demo: Trip = {
   route: "",
   distance: "",
   mode: "everyone",
-  rate: 6,
+  rate: 7,
+  autoFuelRate: true,
+  fuelReferencePrice: 31.3,
+  fuelEffectiveDate: "2026-07-20",
   efficiency: 9,
   fuelPrice: 31.3,
   etcEstimate: 0,
@@ -47,6 +59,15 @@ const demo: Trip = {
     { id: "p2", name: "乘客 B", weight: 100 },
     { id: "p3", name: "乘客 C", weight: 100 },
   ],
+};
+
+const fallbackFuelState: FuelRateState = {
+  source: "台灣中油",
+  fuelType: "95無鉛汽油",
+  price: 31.3,
+  effectiveDate: "2026-07-20",
+  updatedAt: "2026-07-24T00:00:00.000Z",
+  rate: 7,
 };
 
 const money = (value: number) =>
@@ -104,6 +125,7 @@ function NumberField({
   suffix,
   min = 0,
   step = 1,
+  disabled = false,
 }: {
   label: string;
   value: number | "";
@@ -111,6 +133,7 @@ function NumberField({
   suffix?: string;
   min?: number;
   step?: number;
+  disabled?: boolean;
 }) {
   return (
     <label className="field">
@@ -121,6 +144,7 @@ function NumberField({
           min={min}
           step={step}
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value === "" ? "" : Math.max(min, Number(event.target.value)))}
         />
         {suffix && <em>{suffix}</em>}
@@ -144,6 +168,8 @@ export default function Home() {
   const [etcRoundTrip, setEtcRoundTrip] = useState(true);
   const [etcRoute, setEtcRoute] = useState<EtcRoute | null>(null);
   const [showStickyResult, setShowStickyResult] = useState(false);
+  const [fuelRateState, setFuelRateState] = useState<FuelRateState>(fallbackFuelState);
+  const [fuelDataStale, setFuelDataStale] = useState(false);
   const heroRef = useRef<HTMLElement>(null);
   const result = useMemo(() => calculateTrip(trip), [trip]);
   const modeLabel = trip.mode === "everyone" ? "全員平均" : trip.mode === "owner" ? "車主保本" : "純油資";
@@ -158,18 +184,54 @@ export default function Home() {
     const storageVersion = localStorage.getItem("carpool-schema-version");
     const savedHistory = localStorage.getItem("carpool-history");
     const savedTheme = localStorage.getItem("carpool-theme") as typeof theme | null;
+    const savedFuelRate = localStorage.getItem("carpool-fuel-rate");
+    let previousFuelState = fallbackFuelState;
+    if (savedFuelRate) {
+      try {
+        previousFuelState = { ...fallbackFuelState, ...JSON.parse(savedFuelRate) };
+      } catch {
+        previousFuelState = fallbackFuelState;
+      }
+    }
     queueMicrotask(() => {
-      if (storageVersion === "5" && saved) {
+      setFuelRateState(previousFuelState);
+      if (storageVersion === "6" && saved) {
         const restored = JSON.parse(saved);
         setTrip({ ...demo, ...restored, id: "current" });
       } else {
         setTrip({ ...demo });
-        localStorage.setItem("carpool-schema-version", "5");
+        localStorage.setItem("carpool-schema-version", "6");
       }
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedTheme) setTheme(savedTheme);
     });
     fetch(`${publicBase}/data/etc-network.json`).then((response) => response.json()).then(setEtcNetwork).catch(() => undefined);
+    fetch(`${publicBase}/data/fuel-price.json`)
+      .then((response) => {
+        if (!response.ok) throw new Error("fuel price unavailable");
+        return response.json();
+      })
+      .then((data: FuelPriceData) => {
+        if (!isValidFuelPriceData(data)) throw new Error("invalid fuel price");
+        const rate =
+          previousFuelState.effectiveDate === data.effectiveDate
+            ? previousFuelState.rate
+            : nextMileageRate(previousFuelState.rate, data.price);
+        const nextState = { ...data, rate };
+        setFuelRateState(nextState);
+        localStorage.setItem("carpool-fuel-rate", JSON.stringify(nextState));
+        setTrip((current) =>
+          current.autoFuelRate
+            ? {
+                ...current,
+                rate,
+                fuelReferencePrice: data.price,
+                fuelEffectiveDate: data.effectiveDate,
+              }
+            : current,
+        );
+      })
+      .catch(() => setFuelDataStale(true));
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
         .register(`${publicBase}/sw.js`, { scope: `${publicBase}/` })
@@ -212,6 +274,21 @@ export default function Home() {
     window.setTimeout(() => setToast(""), 2200);
   };
 
+  const setAutomaticFuelRate = (enabled: boolean) => {
+    setTrip((current) => ({
+      ...current,
+      autoFuelRate: enabled,
+      rate: enabled ? fuelRateState.rate : 6,
+      fuelReferencePrice: enabled ? fuelRateState.price : current.fuelReferencePrice,
+      fuelEffectiveDate: enabled ? fuelRateState.effectiveDate : current.fuelEffectiveDate,
+    }));
+  };
+
+  const applyLatestFuelRate = () => {
+    setAutomaticFuelRate(true);
+    notify(`已套用目前費率 ${fuelRateState.rate} 元/km`);
+  };
+
   const calculateEtc = () => {
     if (!etcNetwork || !etcStart || !etcEnd) return notify("請選擇上下交流道");
     const outbound = findEtcRoute(etcNetwork, etcStart, etcEnd);
@@ -243,6 +320,14 @@ export default function Home() {
     if (trip.name || trip.route) lines.splice(1, 0, `行程：${trip.name || trip.route}`);
     if (full) {
       lines.splice(3, 0, `里程費：${money(result.mileage)}`, `總交通成本：${money(result.total)}`);
+      if (trip.mode !== "fuel") {
+        lines.splice(
+          3,
+          0,
+          `95無鉛牌價：${trip.fuelReferencePrice} 元/L`,
+          `適用費率：${trip.rate} 元/km`,
+        );
+      }
       if (result.shares.some((person) => person.weight !== 100)) {
         lines.push("", ...result.shares.map((person) => `${person.name}：${money(person.suggested)}`));
       }
@@ -264,7 +349,7 @@ export default function Home() {
   };
 
   const exportData = () => {
-    const blob = new Blob([JSON.stringify({ trip, history }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ trip, history, fuelRateState }, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `共乘車資備份-${new Date().toISOString().slice(0, 10)}.json`;
@@ -370,7 +455,19 @@ export default function Home() {
           <section className="card">
             <div className="section-heading"><div><small>STEP 03</small><h2>費用明細</h2></div><span className="step-icon">＄</span></div>
             {trip.mode !== "fuel" ? (
-              <NumberField label="每公里費用" value={trip.rate} onChange={(v) => update("rate", Number(v))} suffix="元/km" step={0.1} />
+              <>
+                <label className="auto-rate-toggle">
+                  <input type="checkbox" checked={trip.autoFuelRate} onChange={(event) => setAutomaticFuelRate(event.target.checked)} />
+                  <span><b>依中油 95 油價自動計算</b><small>依上一期費率及升降門檻調整</small></span>
+                </label>
+                <NumberField label="每公里費用" value={trip.rate} onChange={(v) => update("rate", Number(v))} suffix="元/km" step={0.1} disabled={trip.autoFuelRate} />
+                <div className="fuel-rate-card">
+                  <div><span>中油 95 牌價</span><b>{fuelRateState.price.toFixed(1)} 元/L</b></div>
+                  <div><span>本期適用費率</span><strong>{fuelRateState.rate} 元/km</strong></div>
+                  <small>生效日 {fuelRateState.effectiveDate} · {fuelDataStale ? "目前使用上次有效資料" : "中油官方資料"}</small>
+                  <button className="text-button" onClick={applyLatestFuelRate}>套用目前最新油價</button>
+                </div>
+              </>
             ) : (
               <div className="two-col">
                 <NumberField label="平均油耗" value={trip.efficiency} onChange={(v) => update("efficiency", Number(v))} suffix="km/L" step={0.1} min={0.1} />
@@ -414,7 +511,7 @@ export default function Home() {
           </section>
 
           <div className="actions">
-            <button className="secondary" onClick={() => { setTrip({ ...demo }); setEtcRoute(null); setEtcStart(""); setEtcEnd(""); notify("已重設為全員平均"); }}>重設</button>
+            <button className="secondary" onClick={() => { setTrip({ ...demo, rate: fuelRateState.rate, fuelReferencePrice: fuelRateState.price, fuelEffectiveDate: fuelRateState.effectiveDate }); setEtcRoute(null); setEtcStart(""); setEtcEnd(""); notify("已重設為全員平均"); }}>重設</button>
             <button className="secondary" onClick={saveTrip}>儲存這趟</button>
             <button className="primary" onClick={() => copyShare(false)}>複製 LINE 簡潔版</button>
             <button className="secondary wide" onClick={() => copyShare(true)}>複製明細版</button>
@@ -426,7 +523,7 @@ export default function Home() {
         <section className="card standalone">
           <div className="section-heading"><div><small>TRIPS</small><h2>歷史行程</h2></div><span className="step-icon">↻</span></div>
           {history.length === 0 ? <div className="empty"><b>還沒有儲存的行程</b><p>算完一趟後按「儲存這趟」，下次就能快速套用。</p></div> :
-            <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.name || "未命名行程"}</b><small>{item.distance} km · {item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-TW") : ""}</small></div><div><button onClick={() => { setTrip({ ...item, id: "current" }); setTab("calculator"); }}>載入</button><button className="danger" onClick={() => { const next = history.filter((h) => h.id !== item.id); setHistory(next); localStorage.setItem("carpool-history", JSON.stringify(next)); }}>刪除</button></div></article>)}</div>}
+            <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.name || "未命名行程"}</b><small>{item.distance} km · {item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-TW") : ""}</small></div><div><button onClick={() => { setTrip({ ...demo, ...item, id: "current" }); setTab("calculator"); }}>載入</button><button className="danger" onClick={() => { const next = history.filter((h) => h.id !== item.id); setHistory(next); localStorage.setItem("carpool-history", JSON.stringify(next)); }}>刪除</button></div></article>)}</div>}
         </section>
       )}
 
@@ -434,7 +531,7 @@ export default function Home() {
         <section className="card standalone">
           <div className="section-heading"><div><small>PREFERENCES</small><h2>偏好與資料</h2></div><span className="step-icon">⚙</span></div>
           <label className="field full"><span>顯示主題</span><select value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="system">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label>
-          <div className="settings-block"><h3>備份資料</h3><p>所有行程只儲存在目前裝置，不會上傳到伺服器。</p><button className="secondary" onClick={exportData}>匯出 JSON 備份</button><label className="import-button">匯入 JSON<input type="file" accept=".json,application/json" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.trip) setTrip({ ...demo, ...data.trip, id: "current" }); if (Array.isArray(data.history)) { setHistory(data.history); localStorage.setItem("carpool-history", JSON.stringify(data.history)); } notify("備份已匯入"); } catch { notify("備份格式不正確"); } }} /></label></div>
+          <div className="settings-block"><h3>備份資料</h3><p>所有行程只儲存在目前裝置，不會上傳到伺服器。</p><button className="secondary" onClick={exportData}>匯出 JSON 備份</button><label className="import-button">匯入 JSON<input type="file" accept=".json,application/json" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.trip) setTrip({ ...demo, ...data.trip, id: "current" }); if (Array.isArray(data.history)) { setHistory(data.history); localStorage.setItem("carpool-history", JSON.stringify(data.history)); } if (data.fuelRateState) { setFuelRateState(data.fuelRateState); localStorage.setItem("carpool-fuel-rate", JSON.stringify(data.fuelRateState)); } notify("備份已匯入"); } catch { notify("備份格式不正確"); } }} /></label></div>
           <div className="settings-block"><h3>ETC 官方資料</h3><p>交流道與牌價資料內建於網站，可離線使用，不需要 Google API 或任何付費服務。行程後仍可用遠通實際扣款覆蓋預估值。</p></div>
         </section>
       )}

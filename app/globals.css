@@ -95,9 +95,22 @@ main { width: min(100%, 760px); margin: 0 auto; min-height: 100vh; padding: 0 20
 .field > span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 7px; }
 .field input, .field select, .passenger input { width: 100%; border: 1px solid var(--line); border-radius: 11px; padding: 12px 13px; background: var(--paper); color: var(--ink); outline: none; }
 .field input:focus, .field select:focus, .passenger input:focus { border-color: var(--green-2); box-shadow: 0 0 0 3px rgba(22, 128, 100, .12); }
+.field input:disabled { color: var(--green); font-weight: 800; opacity: 1; cursor: not-allowed; }
 .input-wrap { position: relative; }
 .input-wrap input { padding-right: 64px; }
 .input-wrap em { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 11px; font-style: normal; }
+.auto-rate-toggle { display: flex; align-items: center; gap: 11px; padding: 13px 14px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(217, 239, 128, .12); }
+.auto-rate-toggle input { width: 18px; height: 18px; accent-color: var(--green); }
+.auto-rate-toggle span { display: flex; flex-direction: column; gap: 3px; }
+.auto-rate-toggle b { font-size: 13px; }
+.auto-rate-toggle small { color: var(--muted); font-size: 10px; }
+.fuel-rate-card { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; margin: -3px 0 16px; border-radius: 14px; background: rgba(22, 128, 100, .08); }
+.fuel-rate-card div { display: flex; flex-direction: column; gap: 4px; }
+.fuel-rate-card span, .fuel-rate-card small { color: var(--muted); font-size: 10px; }
+.fuel-rate-card b { font-size: 14px; }
+.fuel-rate-card strong { color: var(--green); font-size: 18px; }
+.fuel-rate-card small { grid-column: 1 / -1; }
+.fuel-rate-card button { grid-column: 1 / -1; justify-self: start; padding: 0; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .api-note, .helper { color: var(--muted); font-size: 11px; line-height: 1.6; background: rgba(109, 126, 120, .08); padding: 10px 12px; border-radius: 10px; margin: 0; }
 .mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 17px; }
