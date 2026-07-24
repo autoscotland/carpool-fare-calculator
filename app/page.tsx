@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { findEtcRoute, type EtcNetwork, type EtcRoute } from "../lib/etc";
 
 type Mode = "owner" | "everyone" | "fuel";
@@ -10,7 +10,7 @@ type Trip = {
   id: string;
   name: string;
   route: string;
-  distance: number;
+  distance: number | "";
   mode: Mode;
   rate: number;
   efficiency: number;
@@ -28,14 +28,14 @@ type Trip = {
 
 const demo: Trip = {
   id: "current",
-  name: "高雄・白河一日行程",
-  route: "高雄 → 火山碧雲寺 → 東山孚佑宮 → 高雄",
-  distance: 227,
+  name: "",
+  route: "",
+  distance: "",
   mode: "everyone",
   rate: 6,
   efficiency: 9,
   fuelPrice: 31.3,
-  etcEstimate: 120,
+  etcEstimate: 0,
   etcActual: "",
   parking: 0,
   other: 0,
@@ -60,11 +60,16 @@ const ceilTo = (value: number, unit: RoundTo) =>
   unit ? Math.ceil(value / unit) * unit : Math.ceil(value);
 
 export function calculateTrip(trip: Trip) {
+  const hasDistance =
+    trip.distance !== "" &&
+    Number.isFinite(Number(trip.distance)) &&
+    Number(trip.distance) > 0;
+  const distance = hasDistance ? Number(trip.distance) : 0;
   const etc = trip.etcActual === "" ? trip.etcEstimate : trip.etcActual;
   const mileage =
     trip.mode === "fuel"
-      ? (trip.distance / Math.max(trip.efficiency, 0.1)) * trip.fuelPrice
-      : trip.distance * trip.rate;
+      ? (distance / Math.max(trip.efficiency, 0.1)) * trip.fuelPrice
+      : distance * trip.rate;
   const subtotal = mileage + etc + trip.parking + trip.other;
   const total = subtotal;
   const eligible =
@@ -89,7 +94,7 @@ export function calculateTrip(trip: Trip) {
   const collected = shares.reduce((sum, person) => sum + person.suggested, 0);
   const driverShare = trip.mode === "everyone" ? total * (driverWeight / weightTotal) : Math.max(0, total - collected);
   const driverSuggested = trip.mode === "everyone" ? ceilTo(driverShare, trip.roundTo) : 0;
-  return { etc, mileage, subtotal, total, eligible, shares, collected, driverShare, driverSuggested, margin: collected + driverSuggested - total };
+  return { hasDistance, etc, mileage, subtotal, total, eligible, shares, collected, driverShare, driverSuggested, margin: collected + driverSuggested - total };
 }
 
 function NumberField({
@@ -138,14 +143,25 @@ export default function Home() {
   const [etcEnd, setEtcEnd] = useState("");
   const [etcRoundTrip, setEtcRoundTrip] = useState(true);
   const [etcRoute, setEtcRoute] = useState<EtcRoute | null>(null);
+  const [showStickyResult, setShowStickyResult] = useState(false);
+  const heroRef = useRef<HTMLElement>(null);
   const result = useMemo(() => calculateTrip(trip), [trip]);
+  const modeLabel = trip.mode === "everyone" ? "全員平均" : trip.mode === "owner" ? "車主保本" : "純油資";
+  const suggestedFare = result.shares[0]?.suggested || 0;
 
   useEffect(() => {
     const saved = localStorage.getItem("carpool-state");
+    const storageVersion = localStorage.getItem("carpool-schema-version");
     const savedHistory = localStorage.getItem("carpool-history");
     const savedTheme = localStorage.getItem("carpool-theme") as typeof theme | null;
     queueMicrotask(() => {
-      if (saved) setTrip({ ...demo, ...JSON.parse(saved), id: "current", mode: "everyone" });
+      if (storageVersion === "5" && saved) {
+        const restored = JSON.parse(saved);
+        setTrip({ ...demo, ...restored, id: "current" });
+      } else {
+        setTrip({ ...demo });
+        localStorage.setItem("carpool-schema-version", "5");
+      }
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedTheme) setTheme(savedTheme);
     });
@@ -161,6 +177,17 @@ export default function Home() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("carpool-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const hero = heroRef.current;
+    if (!hero || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setShowStickyResult(!entry.isIntersecting),
+      { threshold: 0 },
+    );
+    observer.observe(hero);
+    return () => observer.disconnect();
+  }, [tab]);
 
   const update = <K extends keyof Trip>(key: K, value: Trip[K]) =>
     setTrip((current) => ({ ...current, [key]: value }));
@@ -198,7 +225,6 @@ export default function Home() {
   const shareText = (full = false) => {
     const lines = [
       "🚗 共乘車資分攤",
-      `行程：${trip.name || trip.route || "本次行程"}`,
       `總里程：${trip.distance} 公里`,
       `ETC：${money(Number(result.etc))}`,
       `停車：${money(trip.parking)}`,
@@ -206,6 +232,7 @@ export default function Home() {
       "",
       `本次每位乘客：${money(result.shares[0]?.suggested || 0)} 起`,
     ];
+    if (trip.name || trip.route) lines.splice(1, 0, `行程：${trip.name || trip.route}`);
     if (full) {
       lines.splice(3, 0, `里程費：${money(result.mileage)}`, `總交通成本：${money(result.total)}`);
       if (result.shares.some((person) => person.weight !== 100)) {
@@ -253,25 +280,41 @@ export default function Home() {
         <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>設定</button>
       </nav>
 
+      <button
+        className={`floating-result ${showStickyResult && tab === "calculator" ? "visible" : ""}`}
+        onClick={() => heroRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        aria-label="回到完整收費結果"
+        aria-hidden={!showStickyResult || tab !== "calculator"}
+        tabIndex={showStickyResult && tab === "calculator" ? 0 : -1}
+        data-testid="sticky-result"
+      >
+        <span><b>建議每位收費</b><small>{modeLabel}</small></span>
+        <strong>{result.hasDistance ? `NT$${Math.round(suggestedFare).toLocaleString("zh-TW")}` : "尚未計算"}</strong>
+      </button>
+
       {tab === "calculator" && (
         <>
-          <section className="hero-card">
+          <section className="hero-card" ref={heroRef} id="fare-result">
             <div className="hero-label"><span className="pulse" /> 建議每位乘客收費</div>
-            <div className="price">{money(result.shares[0]?.suggested || 0)}<small>起</small></div>
-            <div className="hero-meta">
-              <span>{result.eligible} 位付費乘客</span><i />
-              <span>{trip.mode === "everyone" ? `全員總分攤 ${money(result.collected + result.driverSuggested)}` : `預估收款 ${money(result.collected)}`}</span>
+            <div className={`price ${result.hasDistance ? "" : "pending"}`}>
+              {result.hasDistance ? <>{money(suggestedFare)}<small>起</small></> : "尚未計算"}
             </div>
-            <div className={`coverage ${result.margin >= 0 ? "safe" : "warn"}`}>
-              {result.margin >= 0 ? "✓ 已涵蓋本趟成本" : `尚差 ${money(Math.abs(result.margin))}`}
-              <b>{result.margin >= 0 ? `進位餘額 ${money(result.margin)}` : "請調高費率"}</b>
+            <div className="hero-meta">
+              {result.hasDistance ? <><span>{result.eligible} 位付費乘客</span><i />
+                <span>{trip.mode === "everyone" ? `全員總分攤 ${money(result.collected + result.driverSuggested)}` : `預估收款 ${money(result.collected)}`}</span></> : <span>請先輸入總公里數</span>}
+            </div>
+            <div className={`coverage ${result.hasDistance ? (result.margin >= 0 ? "safe" : "warn") : "pending"}`}>
+              {result.hasDistance ? <>
+                {result.margin >= 0 ? "✓ 已涵蓋本趟成本" : `尚差 ${money(Math.abs(result.margin))}`}
+                <b>{result.margin >= 0 ? `進位餘額 ${money(result.margin)}` : "請調高費率"}</b>
+              </> : "填入公里數後，這裡會即時顯示建議收費"}
             </div>
           </section>
 
           <section className="card">
             <div className="section-heading"><div><small>STEP 01</small><h2>這趟去哪裡？</h2></div><span className="step-icon">⌖</span></div>
             <label className="field full"><span>行程名稱</span><input value={trip.name} onChange={(e) => update("name", e.target.value)} placeholder="例如：高雄・白河一日遊" /></label>
-            <NumberField label="總公里數" value={trip.distance} onChange={(v) => update("distance", Number(v))} suffix="km" step={0.1} />
+            <NumberField label="總公里數" value={trip.distance} onChange={(v) => update("distance", v)} suffix="km" step={0.1} />
             <div className="api-note">請先使用 Google 地圖查詢行程總公里數，再填入此處。支援小數，例如 227.5 km。</div>
           </section>
 
