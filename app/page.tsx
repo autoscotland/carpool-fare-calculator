@@ -39,7 +39,7 @@ const demo: Trip = {
   etcActual: "",
   parking: 0,
   other: 0,
-  roundTo: 50,
+  roundTo: 10,
   totalPeople: 4,
   freePassengers: 0,
   passengers: [

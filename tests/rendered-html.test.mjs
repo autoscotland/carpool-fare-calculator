@@ -24,6 +24,7 @@ test("renders the carpool calculator", async () => {
   assert.match(html, /class="selected"><b>全員平均<\/b>/);
   assert.match(html, /每公里費用/);
   assert.match(html, /value="6"/);
+  assert.match(html, /<option value="10" selected="">進位至 10 元<\/option>/);
   assert.doesNotMatch(html, /高雄・白河一日行程|value="227"/);
   assert.doesNotMatch(html, /保本緩衝|計算路線與里程|Places API|Routes API/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
