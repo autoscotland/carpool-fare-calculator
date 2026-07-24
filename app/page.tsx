@@ -145,7 +145,7 @@ export default function Home() {
     const savedHistory = localStorage.getItem("carpool-history");
     const savedTheme = localStorage.getItem("carpool-theme") as typeof theme | null;
     queueMicrotask(() => {
-      if (saved) setTrip({ ...demo, ...JSON.parse(saved), id: "current" });
+      if (saved) setTrip({ ...demo, ...JSON.parse(saved), id: "current", mode: "everyone" });
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedTheme) setTheme(savedTheme);
     });
