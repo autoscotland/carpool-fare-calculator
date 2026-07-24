@@ -10,6 +10,7 @@
 - 依上下交流道試算單程或原路來回 ETC
 - 手動輸入 Google 地圖查得的總公里數
 - 10／50／100 元進位
+- 新行程預設無條件進位至 10 元
 - 成人、兒童與中途搭乘的個別權重
 - LINE 簡潔版／明細版分享文字
 - 本機歷史紀錄、深色模式、JSON 匯出與匯入
@@ -55,3 +56,21 @@ npm run data:update-etc
 ## 部署
 
 專案使用 vinext 與 Cloudflare Worker 相容輸出。執行 `npm run build` 後可部署至 OpenAI Sites。
+
+### GitHub Pages
+
+公開網站：
+
+https://autoscotland.github.io/carpool-fare-calculator/
+
+推送到 `main` 後，`.github/workflows/deploy-pages.yml` 會自動執行測試、建置
+GitHub Pages 專用的靜態輸出，並發布網站。也可以在 GitHub 的 Actions 頁面手動執行。
+
+本機檢查 Pages 靜態輸出：
+
+```bash
+npm run pages:build
+```
+
+輸出位於 `pages-output/`，不會提交到 repository。ETC 資料與 PWA 路徑會自動調整為
+`/carpool-fare-calculator/` 子路徑。

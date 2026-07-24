@@ -150,6 +150,10 @@ export default function Home() {
   const suggestedFare = result.shares[0]?.suggested || 0;
 
   useEffect(() => {
+    const publicBase =
+      window.location.hostname.endsWith("github.io")
+        ? "/carpool-fare-calculator"
+        : "";
     const saved = localStorage.getItem("carpool-state");
     const storageVersion = localStorage.getItem("carpool-schema-version");
     const savedHistory = localStorage.getItem("carpool-history");
@@ -165,8 +169,12 @@ export default function Home() {
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedTheme) setTheme(savedTheme);
     });
-    fetch("/data/etc-network.json").then((response) => response.json()).then(setEtcNetwork).catch(() => undefined);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    fetch(`${publicBase}/data/etc-network.json`).then((response) => response.json()).then(setEtcNetwork).catch(() => undefined);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register(`${publicBase}/sw.js`, { scope: `${publicBase}/` })
+        .catch(() => undefined);
+    }
   }, []);
 
   useEffect(() => {
