@@ -4,11 +4,12 @@
 
 ## 功能
 
-- 三種分攤模式與 5／6／7 元每公里快速設定
+- 三種分攤模式；預設全員平均
+- 單一「每公里費用」欄位，預設 6 元/km
 - ETC 預估與實際金額覆蓋
 - 依上下交流道試算單程或原路來回 ETC
-- 起點、途經點、終點的路線里程與分段時間計算
-- 保本緩衝與 10／50／100 元進位
+- 手動輸入 Google 地圖查得的總公里數
+- 10／50／100 元進位
 - 成人、兒童與中途搭乘的個別權重
 - LINE 簡潔版／明細版分享文字
 - 本機歷史紀錄、深色模式、JSON 匯出與匯入
@@ -32,16 +33,9 @@ npm run build
 npm test
 ```
 
-## Google Routes API
+## 公里數
 
-目前所有手動計算與 ETC 試算不需 API Key。若要啟用地點搜尋和自動路線，請把 `.env.example` 複製成 `.env.local`，設定伺服器端的 `GOOGLE_ROUTES_API_KEY`。Google Cloud 專案需啟用：
-
-- Routes API
-- Places API (New)
-
-金鑰只由 `/api/route` 與 `/api/places` 伺服器端路由使用。不要使用 `NEXT_PUBLIC_` 前綴，也不要把金鑰寫進前端。
-
-Google Maps 路線與通行費服務可能產生費用，且台灣 ETC 最終扣款仍可能受當日累計里程與折扣影響。應以行程結束後的遠通實際扣款覆蓋預估值。
+網站不使用 Google Cloud、Google Routes API 或 Places API，也不需要綁定付款方式。請先用 Google 地圖查詢行程總公里數，再手動輸入網站。
 
 ## ETC 官方資料
 

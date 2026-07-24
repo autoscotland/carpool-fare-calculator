@@ -6,13 +6,6 @@ import { findEtcRoute, type EtcNetwork, type EtcRoute } from "../lib/etc";
 type Mode = "owner" | "everyone" | "fuel";
 type RoundTo = 0 | 10 | 50 | 100;
 type Passenger = { id: string; name: string; weight: number };
-type ItineraryStop = { id: string; text: string; placeId?: string };
-type RouteResult = {
-  distance: number;
-  duration: number;
-  legs: { from: string; to: string; distance: number; duration: number }[];
-};
-type PlaceSuggestion = { placeId: string; text: string };
 type Trip = {
   id: string;
   name: string;
@@ -26,7 +19,6 @@ type Trip = {
   etcActual: number | "";
   parking: number;
   other: number;
-  buffer: number;
   roundTo: RoundTo;
   totalPeople: number;
   freePassengers: number;
@@ -39,7 +31,7 @@ const demo: Trip = {
   name: "高雄・白河一日行程",
   route: "高雄 → 火山碧雲寺 → 東山孚佑宮 → 高雄",
   distance: 227,
-  mode: "owner",
+  mode: "everyone",
   rate: 6,
   efficiency: 9,
   fuelPrice: 31.3,
@@ -47,7 +39,6 @@ const demo: Trip = {
   etcActual: "",
   parking: 0,
   other: 0,
-  buffer: 0,
   roundTo: 50,
   totalPeople: 4,
   freePassengers: 0,
@@ -75,27 +66,30 @@ export function calculateTrip(trip: Trip) {
       ? (trip.distance / Math.max(trip.efficiency, 0.1)) * trip.fuelPrice
       : trip.distance * trip.rate;
   const subtotal = mileage + etc + trip.parking + trip.other;
-  const total = subtotal * (1 + trip.buffer / 100);
+  const total = subtotal;
   const eligible =
     trip.mode === "everyone"
       ? Math.max(1, trip.totalPeople - trip.freePassengers)
       : Math.max(1, trip.totalPeople - 1 - trip.freePassengers);
+  const payingPassengerCount = trip.mode === "everyone" ? Math.max(0, eligible - 1) : eligible;
   const weights =
     trip.passengers.length > 0
-      ? trip.passengers.slice(0, eligible)
-      : Array.from({ length: eligible }, (_, index) => ({
+      ? trip.passengers.slice(0, payingPassengerCount)
+      : Array.from({ length: payingPassengerCount }, (_, index) => ({
           id: `auto-${index}`,
           name: `乘客 ${index + 1}`,
           weight: 100,
         }));
-  const weightTotal = weights.reduce((sum, person) => sum + Math.max(0, person.weight), 0) || eligible * 100;
+  const driverWeight = trip.mode === "everyone" ? 100 : 0;
+  const weightTotal = weights.reduce((sum, person) => sum + Math.max(0, person.weight), driverWeight) || eligible * 100;
   const shares = weights.map((person) => {
     const raw = total * (Math.max(0, person.weight) / weightTotal);
     return { ...person, raw, suggested: ceilTo(raw, trip.roundTo) };
   });
   const collected = shares.reduce((sum, person) => sum + person.suggested, 0);
-  const driverShare = trip.mode === "everyone" ? total / eligible : Math.max(0, total - collected);
-  return { etc, mileage, subtotal, total, eligible, shares, collected, driverShare, margin: collected - total };
+  const driverShare = trip.mode === "everyone" ? total * (driverWeight / weightTotal) : Math.max(0, total - collected);
+  const driverSuggested = trip.mode === "everyone" ? ceilTo(driverShare, trip.roundTo) : 0;
+  return { etc, mileage, subtotal, total, eligible, shares, collected, driverShare, driverSuggested, margin: collected + driverSuggested - total };
 }
 
 function NumberField({
@@ -137,18 +131,6 @@ export default function Home() {
   const [detail, setDetail] = useState(false);
   const [toast, setToast] = useState("");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
-  const [stops, setStops] = useState<ItineraryStop[]>([
-    { id: "origin", text: "高雄市" },
-    { id: "waypoint-1", text: "火山碧雲寺" },
-    { id: "waypoint-2", text: "東山孚佑宮" },
-    { id: "destination", text: "高雄市" },
-  ]);
-  const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
-  const [routeBusy, setRouteBusy] = useState(false);
-  const [routeMessage, setRouteMessage] = useState("");
-  const [optimize, setOptimize] = useState(false);
-  const [roundTrip, setRoundTrip] = useState(true);
-  const [suggestions, setSuggestions] = useState<Record<string, PlaceSuggestion[]>>({});
   const [etcNetwork, setEtcNetwork] = useState<EtcNetwork | null>(null);
   const [etcStartRoad, setEtcStartRoad] = useState("國道十號");
   const [etcEndRoad, setEtcEndRoad] = useState("國道三號");
@@ -193,71 +175,6 @@ export default function Home() {
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
-  };
-
-  const updateStop = (id: string, value: Partial<ItineraryStop>) =>
-    setStops((current) => current.map((stop, index) => {
-      if (stop.id === id) return { ...stop, ...value };
-      if (roundTrip && id === current[0]?.id && index === current.length - 1) return { ...stop, ...value };
-      return stop;
-    }));
-
-  const searchPlace = async (stop: ItineraryStop) => {
-    if (stop.text.trim().length < 2) return;
-    try {
-      const response = await fetch("/api/places", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: stop.text, sessionToken: crypto.randomUUID() }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      const options = (data.suggestions ?? []).flatMap((item: { placePrediction?: { placeId: string; text?: { text?: string } } }) =>
-        item.placePrediction?.placeId
-          ? [{ placeId: item.placePrediction.placeId, text: item.placePrediction.text?.text ?? stop.text }]
-          : []);
-      setSuggestions((current) => ({ ...current, [stop.id]: options }));
-      if (!options.length) notify("沒有找到合適的地點");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "地點搜尋暫時無法使用");
-    }
-  };
-
-  const calculateRoute = async () => {
-    const validStops = stops.filter((stop) => stop.text.trim());
-    if (validStops.length < 2) return notify("至少需要起點與終點");
-    setRouteBusy(true);
-    setRouteMessage("");
-    try {
-      const response = await fetch("/api/route", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ places: validStops, optimize }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      const route = data.routes?.[0];
-      if (!route) throw new Error("找不到可行駛路線");
-      const nextResult: RouteResult = {
-        distance: route.distanceMeters / 1000,
-        duration: Number(String(route.duration ?? "0s").replace("s", "")),
-        legs: (route.legs ?? []).map((leg: { distanceMeters: number; duration: string }, index: number) => ({
-          from: validStops[index]?.text ?? "",
-          to: validStops[index + 1]?.text ?? "",
-          distance: leg.distanceMeters / 1000,
-          duration: Number(String(leg.duration ?? "0s").replace("s", "")),
-        })),
-      };
-      setRouteResult(nextResult);
-      update("distance", Number(nextResult.distance.toFixed(1)));
-      update("route", validStops.map((stop) => stop.text).join(" → "));
-      setRouteMessage("已自動取得，仍可手動覆蓋公里數");
-    } catch (error) {
-      setRouteResult(null);
-      setRouteMessage(`${error instanceof Error ? error.message : "路線計算失敗"}；請繼續手動輸入公里數。`);
-    } finally {
-      setRouteBusy(false);
-    }
   };
 
   const calculateEtc = () => {
@@ -343,76 +260,19 @@ export default function Home() {
             <div className="price">{money(result.shares[0]?.suggested || 0)}<small>起</small></div>
             <div className="hero-meta">
               <span>{result.eligible} 位付費乘客</span><i />
-              <span>預估收款 {money(result.collected)}</span>
+              <span>{trip.mode === "everyone" ? `全員總分攤 ${money(result.collected + result.driverSuggested)}` : `預估收款 ${money(result.collected)}`}</span>
             </div>
             <div className={`coverage ${result.margin >= 0 ? "safe" : "warn"}`}>
               {result.margin >= 0 ? "✓ 已涵蓋本趟成本" : `尚差 ${money(Math.abs(result.margin))}`}
-              <b>{result.margin >= 0 ? `保本餘裕 ${money(result.margin)}` : "請調高費率"}</b>
+              <b>{result.margin >= 0 ? `進位餘額 ${money(result.margin)}` : "請調高費率"}</b>
             </div>
           </section>
 
           <section className="card">
             <div className="section-heading"><div><small>STEP 01</small><h2>這趟去哪裡？</h2></div><span className="step-icon">⌖</span></div>
             <label className="field full"><span>行程名稱</span><input value={trip.name} onChange={(e) => update("name", e.target.value)} placeholder="例如：高雄・白河一日遊" /></label>
-            <div className="route-builder">
-              {stops.map((stop, index) => (
-                <div className="stop-row" key={stop.id}>
-                  <span className="stop-dot">{index === 0 ? "起" : index === stops.length - 1 ? "終" : index}</span>
-                  <div className="stop-input">
-                    <input
-                      value={stop.text}
-                      onChange={(event) => updateStop(stop.id, { text: event.target.value, placeId: undefined })}
-                      placeholder={index === 0 ? "輸入起點" : index === stops.length - 1 ? "輸入終點" : "輸入途經點"}
-                      aria-label={`地點 ${index + 1}`}
-                    />
-                    {suggestions[stop.id]?.length > 0 && (
-                      <div className="suggestions">
-                        {suggestions[stop.id].map((option) => (
-                          <button key={option.placeId} onClick={() => {
-                            updateStop(stop.id, option);
-                            setSuggestions((current) => ({ ...current, [stop.id]: [] }));
-                          }}>{option.text}</button>
-                        ))}
-                        <small>地點資料由 Google 提供</small>
-                      </div>
-                    )}
-                  </div>
-                  <button className="mini-button" onClick={() => searchPlace(stop)} aria-label={`搜尋 ${stop.text}`}>搜尋</button>
-                  {index > 0 && index < stops.length - 1 && <div className="stop-actions">
-                    <button onClick={() => setStops((current) => {
-                      if (index <= 1) return current;
-                      const next = [...current];
-                      [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                      return next;
-                    })} aria-label="向上移動">↑</button>
-                    <button onClick={() => setStops((current) => {
-                      if (index >= current.length - 2) return current;
-                      const next = [...current];
-                      [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                      return next;
-                    })} aria-label="向下移動">↓</button>
-                    <button onClick={() => setStops((current) => current.filter((item) => item.id !== stop.id))} aria-label="刪除途經點">×</button>
-                  </div>}
-                </div>
-              ))}
-            </div>
-            <div className="route-tools">
-              <button className="text-button" onClick={() => setStops((current) => [...current.slice(0, -1), { id: crypto.randomUUID(), text: "" }, current.at(-1)!])}>＋ 新增途經點</button>
-              <label><input type="checkbox" checked={roundTrip} onChange={(event) => {
-                const checked = event.target.checked;
-                setRoundTrip(checked);
-                if (checked) setStops((current) => current.map((stop, index) => index === current.length - 1 ? { ...stop, text: current[0]?.text ?? "" } : stop));
-              }} /> 回到起點</label>
-              <label><input type="checkbox" checked={optimize} onChange={(event) => setOptimize(event.target.checked)} /> 最佳排序</label>
-            </div>
-            <button className="primary route-action" onClick={calculateRoute} disabled={routeBusy}>{routeBusy ? "計算中…" : "計算路線與里程"}</button>
-            {routeMessage && <div className={`api-note ${routeResult ? "success-note" : "error-note"}`}>{routeMessage}</div>}
-            {routeResult && <div className="route-result">
-              {routeResult.legs.map((leg, index) => <div key={`${leg.from}-${leg.to}-${index}`}><span>{leg.from} → {leg.to}</span><b>{leg.distance.toFixed(1)} km · {Math.round(leg.duration / 60)} 分</b></div>)}
-              <div className="route-total"><span>總里程／時間</span><b>{routeResult.distance.toFixed(1)} km · {Math.round(routeResult.duration / 60)} 分</b></div>
-            </div>}
-            <NumberField label="總公里數" value={trip.distance} onChange={(v) => { update("distance", Number(v)); setRouteMessage("已手動覆蓋公里數"); }} suffix="km" step={0.1} />
-            <div className="api-note">自動路線需設定 Google Routes API 與 Places API (New)。未設定時，手動公里數仍可完整計算。</div>
+            <NumberField label="總公里數" value={trip.distance} onChange={(v) => update("distance", Number(v))} suffix="km" step={0.1} />
+            <div className="api-note">請先使用 Google 地圖查詢行程總公里數，再填入此處。支援小數，例如 227.5 km。</div>
           </section>
 
           <section className="card">
@@ -459,10 +319,7 @@ export default function Home() {
           <section className="card">
             <div className="section-heading"><div><small>STEP 03</small><h2>費用明細</h2></div><span className="step-icon">＄</span></div>
             {trip.mode !== "fuel" ? (
-              <div className="rate-picker">
-                {[5, 6, 7].map((rate) => <button key={rate} className={trip.rate === rate ? "selected" : ""} onClick={() => update("rate", rate)}>{rate}<small>元/km</small></button>)}
-                <NumberField label="自訂" value={trip.rate} onChange={(v) => update("rate", Number(v))} suffix="元/km" step={0.1} />
-              </div>
+              <NumberField label="每公里費用" value={trip.rate} onChange={(v) => update("rate", Number(v))} suffix="元/km" step={0.1} />
             ) : (
               <div className="two-col">
                 <NumberField label="平均油耗" value={trip.efficiency} onChange={(v) => update("efficiency", Number(v))} suffix="km/L" step={0.1} min={0.1} />
@@ -474,7 +331,6 @@ export default function Home() {
               <NumberField label="ETC 實際" value={trip.etcActual} onChange={(v) => update("etcActual", v)} suffix="元" />
               <NumberField label="停車費" value={trip.parking} onChange={(v) => update("parking", Number(v))} suffix="元" />
               <NumberField label="其他費用" value={trip.other} onChange={(v) => update("other", Number(v))} suffix="元" />
-              <NumberField label="保本緩衝" value={trip.buffer} onChange={(v) => update("buffer", Number(v))} suffix="%" />
             </div>
             <label className="field full"><span>收費進位</span><select value={trip.roundTo} onChange={(e) => update("roundTo", Number(e.target.value) as RoundTo)}><option value={0}>不進位</option><option value={10}>進位至 10 元</option><option value={50}>進位至 50 元</option><option value={100}>進位至 100 元</option></select></label>
           </section>
@@ -483,7 +339,7 @@ export default function Home() {
             <div className="section-heading"><div><small>OPTIONAL</small><h2>個別乘客權重</h2></div><button className="text-button" onClick={() => update("passengers", [...trip.passengers, { id: crypto.randomUUID(), name: `乘客 ${trip.passengers.length + 1}`, weight: 100 }])}>＋ 新增</button></div>
             <p className="helper">成人填 100%，兒童可填 50%，中途搭乘可依里程比例調整。</p>
             <div className="passenger-list">
-              {trip.passengers.slice(0, result.eligible).map((person, index) => (
+              {trip.passengers.slice(0, result.shares.length).map((person, index) => (
                 <div className="passenger" key={person.id}>
                   <span>{index + 1}</span>
                   <input value={person.name} onChange={(e) => update("passengers", trip.passengers.map((p) => p.id === person.id ? { ...p, name: e.target.value } : p))} aria-label={`乘客 ${index + 1} 姓名`} />
@@ -500,13 +356,14 @@ export default function Home() {
               <div><span>{trip.mode === "fuel" ? "推估油資" : `里程成本（${trip.distance} × ${trip.rate}）`}</span><b>{money(result.mileage)}</b></div>
               <div><span>ETC（{trip.etcActual === "" ? "預估" : "實際"}）</span><b>{money(Number(result.etc))}</b></div>
               <div><span>停車與其他</span><b>{money(trip.parking + trip.other)}</b></div>
-              {trip.buffer > 0 && <div><span>保本緩衝 {trip.buffer}%</span><b>{money(result.total - result.subtotal)}</b></div>}
               <div className="total"><span>總交通成本</span><b>{money(result.total)}</b></div>
+              {trip.mode === "everyone" && <div><span>駕駛分攤</span><b>{money(result.driverSuggested)}</b></div>}
               {result.shares.map((person) => <div key={person.id}><span>{person.name}（{person.weight}%）</span><b>{money(person.suggested)}</b></div>)}
             </div>}
           </section>
 
           <div className="actions">
+            <button className="secondary" onClick={() => { setTrip({ ...demo }); setEtcRoute(null); setEtcStart(""); setEtcEnd(""); notify("已重設為全員平均"); }}>重設</button>
             <button className="secondary" onClick={saveTrip}>儲存這趟</button>
             <button className="primary" onClick={() => copyShare(false)}>複製 LINE 簡潔版</button>
             <button className="secondary wide" onClick={() => copyShare(true)}>複製明細版</button>
@@ -527,7 +384,7 @@ export default function Home() {
           <div className="section-heading"><div><small>PREFERENCES</small><h2>偏好與資料</h2></div><span className="step-icon">⚙</span></div>
           <label className="field full"><span>顯示主題</span><select value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="system">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label>
           <div className="settings-block"><h3>備份資料</h3><p>所有行程只儲存在目前裝置，不會上傳到伺服器。</p><button className="secondary" onClick={exportData}>匯出 JSON 備份</button><label className="import-button">匯入 JSON<input type="file" accept=".json,application/json" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.trip) setTrip({ ...demo, ...data.trip, id: "current" }); if (Array.isArray(data.history)) { setHistory(data.history); localStorage.setItem("carpool-history", JSON.stringify(data.history)); } notify("備份已匯入"); } catch { notify("備份格式不正確"); } }} /></label></div>
-          <div className="settings-block"><h3>自動路線與 ETC</h3><p>正式串接 Google Routes API 時，金鑰必須放在伺服器端環境變數。自動估算失敗時，本工具永遠保留手動輸入與實際金額覆蓋。</p></div>
+          <div className="settings-block"><h3>ETC 官方資料</h3><p>交流道與牌價資料內建於網站，可離線使用，不需要 Google API 或任何付費服務。行程後仍可用遠通實際扣款覆蓋預估值。</p></div>
         </section>
       )}
 

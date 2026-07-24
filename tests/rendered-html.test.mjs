@@ -20,6 +20,10 @@ test("renders the carpool calculator", async () => {
   assert.match(html, /建議每位乘客收費/);
   assert.match(html, /高雄・白河一日行程/);
   assert.match(html, /車主保本/);
+  assert.match(html, /class="selected"><b>全員平均<\/b>/);
+  assert.match(html, /每公里費用/);
+  assert.match(html, /value="6"/);
+  assert.doesNotMatch(html, /保本緩衝|計算路線與里程|Places API|Routes API/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
