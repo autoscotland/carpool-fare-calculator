@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { findEtcRoute, type EtcNetwork, type EtcRoute } from "../lib/etc";
-import { syncPassengersToPeople, type Passenger } from "../lib/passengers";
+import { migrateLegacyPassengers, syncPassengersToPeople, type Passenger } from "../lib/passengers";
 import {
   isValidFuelPriceData,
   nextMileageRate,
@@ -55,9 +55,10 @@ const demo: Trip = {
   totalPeople: 4,
   freePassengers: 0,
   passengers: [
-    { id: "p1", name: "乘客 A", weight: 100 },
-    { id: "p2", name: "乘客 B", weight: 100 },
-    { id: "p3", name: "乘客 C", weight: 100 },
+    { id: "driver", name: "司機", weight: 100 },
+    { id: "p1", name: "乘客 1", weight: 100 },
+    { id: "p2", name: "乘客 2", weight: 100 },
+    { id: "p3", name: "乘客 3", weight: 100 },
   ],
 };
 
@@ -101,11 +102,10 @@ export function calculateTrip(trip: Trip) {
       ? Math.max(1, trip.totalPeople - trip.freePassengers)
       : Math.max(1, trip.totalPeople - 1 - trip.freePassengers);
   const payingPassengerCount = trip.mode === "everyone" ? Math.max(0, eligible - 1) : eligible;
-  const weights = syncPassengersToPeople(
-    trip.passengers,
-    payingPassengerCount + 1,
-  ).slice(0, payingPassengerCount);
-  const driverWeight = trip.mode === "everyone" ? 100 : 0;
+  const roster = syncPassengersToPeople(trip.passengers, trip.totalPeople);
+  const driver = roster[0];
+  const weights = roster.slice(1, payingPassengerCount + 1);
+  const driverWeight = trip.mode === "everyone" ? Math.max(0, driver.weight) : 0;
   const weightTotal = weights.reduce((sum, person) => sum + Math.max(0, person.weight), driverWeight) || eligible * 100;
   const shares = weights.map((person) => {
     const raw = total * (Math.max(0, person.weight) / weightTotal);
@@ -114,7 +114,7 @@ export function calculateTrip(trip: Trip) {
   const collected = shares.reduce((sum, person) => sum + person.suggested, 0);
   const driverShare = trip.mode === "everyone" ? total * (driverWeight / weightTotal) : Math.max(0, total - collected);
   const driverSuggested = trip.mode === "everyone" ? ceilTo(driverShare, trip.roundTo) : 0;
-  return { hasDistance, etc, mileage, subtotal, total, eligible, shares, collected, driverShare, driverSuggested, margin: collected + driverSuggested - total };
+  return { hasDistance, etc, mileage, subtotal, total, eligible, driver, shares, collected, driverShare, driverSuggested, margin: collected + driverSuggested - total };
 }
 
 function NumberField({
@@ -194,14 +194,21 @@ export default function Home() {
     }
     queueMicrotask(() => {
       setFuelRateState(previousFuelState);
-      if (storageVersion === "6" && saved) {
+      if (storageVersion === "7" && saved) {
         const restored = JSON.parse(saved);
-        setTrip({ ...demo, ...restored, id: "current" });
+        setTrip({ ...demo, ...restored, passengers: syncPassengersToPeople(restored.passengers ?? [], restored.totalPeople ?? demo.totalPeople), id: "current" });
+      } else if (saved) {
+        const restored = JSON.parse(saved);
+        setTrip({ ...demo, ...restored, passengers: migrateLegacyPassengers(restored.passengers ?? [], restored.totalPeople ?? demo.totalPeople), id: "current" });
+        localStorage.setItem("carpool-schema-version", "7");
       } else {
         setTrip({ ...demo });
-        localStorage.setItem("carpool-schema-version", "6");
+        localStorage.setItem("carpool-schema-version", "7");
       }
-      if (savedHistory) setHistory(JSON.parse(savedHistory));
+      if (savedHistory) {
+        const parsedHistory = JSON.parse(savedHistory);
+        setHistory(parsedHistory.map((item: Trip) => ({ ...item, passengers: migrateLegacyPassengers(item.passengers ?? [], item.totalPeople ?? demo.totalPeople) })));
+      }
       if (savedTheme) setTheme(savedTheme);
     });
     fetch(`${publicBase}/data/etc-network.json`).then((response) => response.json()).then(setEtcNetwork).catch(() => undefined);
@@ -507,15 +514,15 @@ export default function Home() {
           </section>
 
           <section className="card">
-            <div className="section-heading"><div><small>OPTIONAL</small><h2>個別乘客權重</h2></div><span className="passenger-count">{Math.max(1, trip.totalPeople - 1)} 位乘客</span></div>
-            <p className="helper">成人填 100%，兒童可填 50%，中途搭乘可依里程比例調整。</p>
+            <div className="section-heading"><div><small>OPTIONAL</small><h2>個別乘客權重</h2></div><span className="passenger-count">{trip.totalPeople} 人（含司機）</span></div>
+            <p className="helper">司機與乘客預設皆為 100%；兒童可填 50%，中途搭乘可依里程比例調整。</p>
             <div className="passenger-list">
-              {trip.passengers.slice(0, result.shares.length).map((person, index) => (
+              {trip.passengers.slice(0, trip.totalPeople).map((person, index) => (
                 <div className="passenger" key={person.id}>
                   <span>{index + 1}</span>
-                  <input value={person.name} onChange={(e) => update("passengers", trip.passengers.map((p) => p.id === person.id ? { ...p, name: e.target.value } : p))} aria-label={`乘客 ${index + 1} 姓名`} />
+                  <input value={person.name} onChange={(e) => update("passengers", trip.passengers.map((p) => p.id === person.id ? { ...p, name: e.target.value } : p))} aria-label={`${index === 0 ? "司機" : `乘客 ${index}`}姓名`} />
                   <div className="weight"><input type="number" min="0" value={person.weight} onChange={(e) => update("passengers", trip.passengers.map((p) => p.id === person.id ? { ...p, weight: Math.max(0, Number(e.target.value)) } : p))} aria-label={`${person.name} 權重`} /><em>%</em></div>
-                  <b>{money(result.shares[index]?.suggested || 0)}</b>
+                  <b>{money(index === 0 ? (trip.mode === "everyone" ? result.driverSuggested : 0) : (result.shares[index - 1]?.suggested || 0))}</b>
                 </div>
               ))}
             </div>
@@ -528,7 +535,7 @@ export default function Home() {
               <div><span>ETC（{trip.etcActual === "" ? "預估" : "實際"}）</span><b>{money(Number(result.etc))}</b></div>
               <div><span>停車與其他</span><b>{money(trip.parking + trip.other)}</b></div>
               <div className="total"><span>總交通成本</span><b>{money(result.total)}</b></div>
-              {trip.mode === "everyone" && <div><span>駕駛分攤</span><b>{money(result.driverSuggested)}</b></div>}
+              {trip.mode === "everyone" && <div><span>{result.driver.name}（{result.driver.weight}%）</span><b>{money(result.driverSuggested)}</b></div>}
               {result.shares.map((person) => <div key={person.id}><span>{person.name}（{person.weight}%）</span><b>{money(person.suggested)}</b></div>)}
             </div>}
           </section>
@@ -546,7 +553,7 @@ export default function Home() {
         <section className="card standalone">
           <div className="section-heading"><div><small>TRIPS</small><h2>歷史行程</h2></div><span className="step-icon">↻</span></div>
           {history.length === 0 ? <div className="empty"><b>還沒有儲存的行程</b><p>算完一趟後按「儲存這趟」，下次就能快速套用。</p></div> :
-            <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.name || "未命名行程"}</b><small>{item.distance} km · {item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-TW") : ""}</small></div><div><button onClick={() => { setTrip({ ...demo, ...item, id: "current" }); setTab("calculator"); }}>載入</button><button className="danger" onClick={() => { const next = history.filter((h) => h.id !== item.id); setHistory(next); localStorage.setItem("carpool-history", JSON.stringify(next)); }}>刪除</button></div></article>)}</div>}
+          <div className="history-list">{history.map((item) => <article key={item.id}><div><b>{item.name || "未命名行程"}</b><small>{item.distance} km · {item.savedAt ? new Date(item.savedAt).toLocaleDateString("zh-TW") : ""}</small></div><div><button onClick={() => { setTrip({ ...demo, ...item, passengers: migrateLegacyPassengers(item.passengers ?? [], item.totalPeople ?? demo.totalPeople), id: "current" }); setTab("calculator"); }}>載入</button><button className="danger" onClick={() => { const next = history.filter((h) => h.id !== item.id); setHistory(next); localStorage.setItem("carpool-history", JSON.stringify(next)); }}>刪除</button></div></article>)}</div>}
         </section>
       )}
 
@@ -554,7 +561,7 @@ export default function Home() {
         <section className="card standalone">
           <div className="section-heading"><div><small>PREFERENCES</small><h2>偏好與資料</h2></div><span className="step-icon">⚙</span></div>
           <label className="field full"><span>顯示主題</span><select value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}><option value="system">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label>
-          <div className="settings-block"><h3>備份資料</h3><p>所有行程只儲存在目前裝置，不會上傳到伺服器。</p><button className="secondary" onClick={exportData}>匯出 JSON 備份</button><label className="import-button">匯入 JSON<input type="file" accept=".json,application/json" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.trip) setTrip({ ...demo, ...data.trip, id: "current" }); if (Array.isArray(data.history)) { setHistory(data.history); localStorage.setItem("carpool-history", JSON.stringify(data.history)); } if (data.fuelRateState) { setFuelRateState(data.fuelRateState); localStorage.setItem("carpool-fuel-rate", JSON.stringify(data.fuelRateState)); } notify("備份已匯入"); } catch { notify("備份格式不正確"); } }} /></label></div>
+          <div className="settings-block"><h3>備份資料</h3><p>所有行程只儲存在目前裝置，不會上傳到伺服器。</p><button className="secondary" onClick={exportData}>匯出 JSON 備份</button><label className="import-button">匯入 JSON<input type="file" accept=".json,application/json" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.trip) setTrip({ ...demo, ...data.trip, passengers: migrateLegacyPassengers(data.trip.passengers ?? [], data.trip.totalPeople ?? demo.totalPeople), id: "current" }); if (Array.isArray(data.history)) { const importedHistory = data.history.map((item: Trip) => ({ ...item, passengers: migrateLegacyPassengers(item.passengers ?? [], item.totalPeople ?? demo.totalPeople) })); setHistory(importedHistory); localStorage.setItem("carpool-history", JSON.stringify(importedHistory)); } if (data.fuelRateState) { setFuelRateState(data.fuelRateState); localStorage.setItem("carpool-fuel-rate", JSON.stringify(data.fuelRateState)); } notify("備份已匯入"); } catch { notify("備份格式不正確"); } }} /></label></div>
           <div className="settings-block"><h3>ETC 官方資料</h3><p>交流道與牌價資料內建於網站，可離線使用，不需要 Google API 或任何付費服務。行程後仍可用遠通實際扣款覆蓋預估值。</p></div>
         </section>
       )}
