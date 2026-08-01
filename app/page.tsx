@@ -70,6 +70,9 @@ const fallbackFuelState: FuelRateState = {
   rate: 7,
 };
 
+const liveFuelPriceUrl =
+  "https://autoscotland.github.io/carpool-fare-calculator/data/fuel-price.json";
+
 const money = (value: number) =>
   new Intl.NumberFormat("zh-TW", {
     style: "currency",
@@ -206,10 +209,24 @@ export default function Home() {
       if (savedTheme) setTheme(savedTheme);
     });
     fetch(`${publicBase}/data/etc-network.json`).then((response) => response.json()).then(setEtcNetwork).catch(() => undefined);
-    fetch(`${publicBase}/data/fuel-price.json`)
+    const loadFuelPrice = async () => {
+      const liveResponse = await fetch(`${liveFuelPriceUrl}?v=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (!liveResponse.ok) throw new Error("live fuel price unavailable");
+      return liveResponse.json();
+    };
+
+    loadFuelPrice()
+      .catch(async () => {
+        const bundledResponse = await fetch(`${publicBase}/data/fuel-price.json`, {
+          cache: "no-store",
+        });
+        if (!bundledResponse.ok) throw new Error("bundled fuel price unavailable");
+        return bundledResponse.json();
+      })
       .then((response) => {
-        if (!response.ok) throw new Error("fuel price unavailable");
-        return response.json();
+        return response;
       })
       .then((data: FuelPriceData) => {
         if (!isValidFuelPriceData(data)) throw new Error("invalid fuel price");

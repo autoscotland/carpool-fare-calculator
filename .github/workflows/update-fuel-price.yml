@@ -2,7 +2,9 @@ name: Update CPC fuel price
 
 on:
   schedule:
-    - cron: "0 0 * * 1"
+    # 10:00 and 18:00 Asia/Taipei every day. Running twice avoids missing
+    # a new price when CPC publishes after the first scheduled check.
+    - cron: "0 2,10 * * *"
   workflow_dispatch:
 
 permissions:

@@ -53,7 +53,7 @@ npm test
 npm run fuel:update
 ```
 
-`.github/workflows/update-fuel-price.yml` 會在每週一台灣時間上午 8 點自動檢查；資料有變化才更新 `public/data/fuel-price.json` 並觸發網站部署。
+`.github/workflows/update-fuel-price.yml` 每天會在台灣時間上午 10 點與下午 6 點自動檢查；資料有變化才更新 `public/data/fuel-price.json` 並觸發網站部署。網站會直接讀取 GitHub Pages 上的最新油價資料，因此其他發布網址也能同步套用，不必等待重新部署。
 
 ## ETC 官方資料
 
