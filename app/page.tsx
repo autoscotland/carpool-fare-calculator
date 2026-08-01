@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { findEtcRoute, type EtcNetwork, type EtcRoute } from "../lib/etc";
+import { syncPassengersToPeople, type Passenger } from "../lib/passengers";
 import {
   isValidFuelPriceData,
   nextMileageRate,
@@ -11,7 +12,6 @@ import {
 
 type Mode = "owner" | "everyone" | "fuel";
 type RoundTo = 0 | 10 | 50 | 100;
-type Passenger = { id: string; name: string; weight: number };
 type Trip = {
   id: string;
   name: string;
@@ -101,14 +101,10 @@ export function calculateTrip(trip: Trip) {
       ? Math.max(1, trip.totalPeople - trip.freePassengers)
       : Math.max(1, trip.totalPeople - 1 - trip.freePassengers);
   const payingPassengerCount = trip.mode === "everyone" ? Math.max(0, eligible - 1) : eligible;
-  const weights =
-    trip.passengers.length > 0
-      ? trip.passengers.slice(0, payingPassengerCount)
-      : Array.from({ length: payingPassengerCount }, (_, index) => ({
-          id: `auto-${index}`,
-          name: `乘客 ${index + 1}`,
-          weight: 100,
-        }));
+  const weights = syncPassengersToPeople(
+    trip.passengers,
+    payingPassengerCount + 1,
+  ).slice(0, payingPassengerCount);
   const driverWeight = trip.mode === "everyone" ? 100 : 0;
   const weightTotal = weights.reduce((sum, person) => sum + Math.max(0, person.weight), driverWeight) || eligible * 100;
   const shares = weights.map((person) => {
@@ -278,6 +274,16 @@ export default function Home() {
 
   const update = <K extends keyof Trip>(key: K, value: Trip[K]) =>
     setTrip((current) => ({ ...current, [key]: value }));
+
+  const updateTotalPeople = (value: number | "") => {
+    const totalPeople = Math.max(2, Math.floor(Number(value)));
+    setTrip((current) => ({
+      ...current,
+      totalPeople,
+      freePassengers: Math.min(current.freePassengers, totalPeople - 1),
+      passengers: syncPassengersToPeople(current.passengers, totalPeople),
+    }));
+  };
 
   const roads = useMemo(
     () => [...new Set((etcNetwork?.nodes ?? []).map((node) => node.road))],
@@ -463,7 +469,7 @@ export default function Home() {
               ))}
             </div>
             <div className="two-col">
-              <NumberField label="車上總人數" value={trip.totalPeople} onChange={(v) => update("totalPeople", Math.max(2, Number(v)))} suffix="人" min={2} />
+              <NumberField label="車上總人數" value={trip.totalPeople} onChange={updateTotalPeople} suffix="人" min={2} />
               <NumberField label="免費乘客" value={trip.freePassengers} onChange={(v) => update("freePassengers", Math.min(trip.totalPeople - 1, Number(v)))} suffix="人" />
             </div>
             <div className="count-strip"><span>付費乘客</span><b>{result.eligible} 人</b></div>
@@ -501,7 +507,7 @@ export default function Home() {
           </section>
 
           <section className="card">
-            <div className="section-heading"><div><small>OPTIONAL</small><h2>個別乘客權重</h2></div><button className="text-button" onClick={() => update("passengers", [...trip.passengers, { id: crypto.randomUUID(), name: `乘客 ${trip.passengers.length + 1}`, weight: 100 }])}>＋ 新增</button></div>
+            <div className="section-heading"><div><small>OPTIONAL</small><h2>個別乘客權重</h2></div><span className="passenger-count">{Math.max(1, trip.totalPeople - 1)} 位乘客</span></div>
             <p className="helper">成人填 100%，兒童可填 50%，中途搭乘可依里程比例調整。</p>
             <div className="passenger-list">
               {trip.passengers.slice(0, result.shares.length).map((person, index) => (
