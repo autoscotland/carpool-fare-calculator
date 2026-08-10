@@ -169,6 +169,7 @@ export default function Home() {
   const [showStickyResult, setShowStickyResult] = useState(false);
   const [fuelRateState, setFuelRateState] = useState<FuelRateState>(fallbackFuelState);
   const [fuelDataStale, setFuelDataStale] = useState(false);
+  const [fuelDataLoading, setFuelDataLoading] = useState(false);
   const heroRef = useRef<HTMLElement>(null);
   const result = useMemo(() => calculateTrip(trip), [trip]);
   const modeLabel = trip.mode === "everyone" ? "全員平均" : trip.mode === "owner" ? "車主保本" : "純油資";
@@ -315,8 +316,43 @@ export default function Home() {
   };
 
   const applyLatestFuelRate = () => {
-    setAutomaticFuelRate(true);
-    notify(`已套用目前費率 ${fuelRateState.rate} 元/km`);
+    const publicBase = window.location.hostname.endsWith("github.io")
+      ? "/carpool-fare-calculator"
+      : "";
+    setFuelDataLoading(true);
+    fetch(`${liveFuelPriceUrl}?v=${Date.now()}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (response.ok) return response.json();
+        const bundledResponse = await fetch(`${publicBase}/data/fuel-price.json?v=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!bundledResponse.ok) throw new Error("fuel price unavailable");
+        return bundledResponse.json();
+      })
+      .then((data: FuelPriceData) => {
+        if (!isValidFuelPriceData(data)) throw new Error("invalid fuel price");
+        const rate =
+          fuelRateState.effectiveDate === data.effectiveDate
+            ? fuelRateState.rate
+            : nextMileageRate(fuelRateState.rate, data.price);
+        const nextState = { ...data, rate };
+        setFuelRateState(nextState);
+        localStorage.setItem("carpool-fuel-rate", JSON.stringify(nextState));
+        setFuelDataStale(false);
+        setTrip((current) => ({
+          ...current,
+          autoFuelRate: true,
+          rate,
+          fuelReferencePrice: data.price,
+          fuelEffectiveDate: data.effectiveDate,
+        }));
+        notify(`已更新：95 無鉛 ${data.price} 元/L，費率 ${rate} 元/km`);
+      })
+      .catch(() => {
+        setFuelDataStale(true);
+        notify("更新失敗，繼續使用上次有效資料");
+      })
+      .finally(() => setFuelDataLoading(false));
   };
 
   const calculateEtc = () => {
@@ -495,7 +531,9 @@ export default function Home() {
                   <div><span>中油 95 牌價</span><b>{fuelRateState.price.toFixed(1)} 元/L</b></div>
                   <div><span>本期適用費率</span><strong>{fuelRateState.rate} 元/km</strong></div>
                   <small>生效日 {fuelRateState.effectiveDate} · {fuelDataStale ? "目前使用上次有效資料" : "中油官方資料"}</small>
-                  <button className="text-button" onClick={applyLatestFuelRate}>套用目前最新油價</button>
+                  <button className="text-button" onClick={applyLatestFuelRate} disabled={fuelDataLoading}>
+                    {fuelDataLoading ? "正在查詢…" : "立即更新油價"}
+                  </button>
                 </div>
               </>
             ) : (
